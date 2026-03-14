@@ -1,20 +1,9 @@
 from __future__ import annotations
 
-"""
-Usage:
-    from investopedia_api import TradeAPI
-
-    api = TradeAPI(headless=True)
-    portfolio = api.get_portfolio()
-    api.place_order("AAPL", 10, "buy")
-    api.close()
-"""
-
-import json
 import pathlib
 from dataclasses import dataclass, field, asdict
 from typing import Literal
-from urllib.parse import urlparse
+import re
 
 from playwright.sync_api import sync_playwright, Browser, BrowserContext, Page
 
@@ -226,6 +215,40 @@ class TradeAPI:
             pass
         return None
 
+    def _set_text_input(self, locator, value: str) -> None:
+        locator.click(force=True)
+        locator.fill("")
+        locator.fill(value)
+        locator.press("Tab")
+        try:
+            current = locator.input_value().strip()
+        except Exception:
+            current = ""
+        if current != value:
+            locator.evaluate(
+                """
+                (el, val) => {
+                    el.value = val;
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                    el.dispatchEvent(new Event('change', { bubbles: true }));
+                    el.dispatchEvent(new Event('blur', { bubbles: true }));
+                }
+                """,
+                value,
+            )
+
+    def _select_dropdown_option(self, page: Page, input_locator, option_text: str) -> None:
+        input_locator.click(force=True)
+        input_locator.fill("")
+        input_locator.fill(option_text)
+        page.wait_for_timeout(250)
+        option = page.get_by_text(re.compile(rf"^{re.escape(option_text)}$", re.IGNORECASE)).first
+        if option.count():
+            option.click()
+        else:
+            input_locator.press("Enter")
+        page.wait_for_timeout(200)
+
     def place_order(
         self,
         symbol: str,
@@ -258,21 +281,27 @@ class TradeAPI:
             symbol_input.press("Enter")
         page.wait_for_timeout(500)
 
-        action_input = page.locator("input[aria-label='action']").first
-        action_input.click()
-        page.wait_for_timeout(300)
-        page.get_by_text(side.capitalize(), exact=True).first.click()
-        page.wait_for_timeout(300)
+        action_input = (
+            page.locator("input[aria-label='action']")
+            .or_(page.get_by_label("Action"))
+            .first
+        )
+        self._select_dropdown_option(page, action_input, side.capitalize())
 
-        qty_input = page.locator("input[aria-label='quantity']").first
-        qty_input.click()
-        qty_input.fill(str(qty))
+        qty_input = (
+            page.locator("input[aria-label='quantity']")
+            .or_(page.get_by_label("Quantity"))
+            .or_(page.locator("input[type='number']"))
+            .first
+        )
+        self._set_text_input(qty_input, str(qty))
 
-        order_input = page.locator("input[aria-label='order-type']").first
-        order_input.click()
-        page.wait_for_timeout(300)
-        page.get_by_text(order_type, exact=True).first.click()
-        page.wait_for_timeout(300)
+        order_input = (
+            page.locator("input[aria-label='order-type']")
+            .or_(page.get_by_label("Order Type"))
+            .first
+        )
+        self._select_dropdown_option(page, order_input, order_type)
 
         if limit_stop_price is not None:
             price_input = (
